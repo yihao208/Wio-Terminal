@@ -1,0 +1,365 @@
+#include"TFT_eSPI.h"
+#define TFT_BLACK       0x0000
+#define TFT_WHITE       0xFFFF
+#define TFT_RED         0xF800
+#define TFT_GREEN       0x07E0
+
+// TFT屏幕对象
+TFT_eSPI tft;
+#define LCD_BACKLIGHT (72Ul)
+
+// ====================== 原始功能变量（保留） ======================
+// 计时变量
+unsigned long startTime = 0;
+unsigned long pauseTime = 0;
+bool isTiming = false;
+bool isTimerShow = false;
+int lastSeconds = -1;
+bool lastTimingState = false;
+
+// ====================== 贪吃蛇游戏变量（新增） ======================
+#define GRID_SIZE 15    // 格子大小(px)
+#define GRID_ROWS 16    // 行数：240/15=16
+#define GRID_COLS 21    // 列数：320/15≈21
+#define SNAKE_SPEED 200 // 移动速度(ms)
+
+// 游戏状态
+bool gameMode = false;       // false=原始功能，true=贪吃蛇游戏
+bool gameStarted = false;    // 游戏是否启动
+bool gameOver = false;       // 游戏是否结束
+
+// 贪吃蛇结构体
+struct SnakeSegment {
+  int x;
+  int y;
+};
+SnakeSegment snake[GRID_ROWS * GRID_COLS];
+int snakeLength = 3;
+int dirX = 1, dirY = 0;
+
+// 食物位置
+int foodX, foodY;
+
+// 游戏时间控制
+unsigned long lastMoveTime = 0;
+unsigned long lastDebounceTime = 0;
+unsigned long debounceDelay = 50;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // 初始化TFT屏幕
+  tft.begin();
+  tft.setRotation(3);
+  digitalWrite(LCD_BACKLIGHT, HIGH);
+  tft.fillScreen(TFT_BLACK);
+  
+  // 初始化按键（原始A/B/C键 + 五向开关）
+  pinMode(WIO_KEY_A, INPUT_PULLUP);
+  pinMode(WIO_KEY_B, INPUT_PULLUP);
+  pinMode(WIO_KEY_C, INPUT_PULLUP);
+  pinMode(WIO_5S_UP, INPUT_PULLUP);
+  pinMode(WIO_5S_DOWN, INPUT_PULLUP);
+  pinMode(WIO_5S_LEFT, INPUT_PULLUP);
+  pinMode(WIO_5S_RIGHT, INPUT_PULLUP);
+  pinMode(WIO_5S_PRESS, INPUT_PULLUP);
+  
+  // 初始化随机数种子（兼容所有版本）
+  randomSeed(analogRead(A0));
+  
+  // 启动默认显示原始HelloWorld界面
+  showHelloWorld();
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // ====================== 五向中键：切换游戏/原始功能 ======================
+  if (digitalRead(WIO_5S_PRESS) == LOW && currentTime - lastDebounceTime > debounceDelay) {
+    Serial.println("5 Way Press - Toggle Mode");
+    gameMode = !gameMode;       // 切换模式
+    lastDebounceTime = currentTime;
+    
+    if (gameMode) {
+      // 切换到游戏模式：初始化游戏
+      initGame();
+      gameStarted = true;
+      gameOver = false;
+    } else {
+      // 切换回原始功能：显示HelloWorld
+      showHelloWorld();
+    }
+    while (digitalRead(WIO_5S_PRESS) == LOW); // 等待按键释放
+  }
+  
+  // ====================== 模式1：原始功能（HelloWorld+计时） ======================
+  if (!gameMode) {
+    checkKeyPress(); // 检测原始A/B/C键
+    
+    // 计时界面更新逻辑
+    if (isTimerShow) {
+      unsigned long currentTimeTimer = 0;
+      if (isTiming) {
+        currentTimeTimer = pauseTime + (millis() - startTime) / 1000;
+      } else {
+        currentTimeTimer = pauseTime;
+      }
+      int currentSeconds = currentTimeTimer % 60;
+      
+      if (currentSeconds != lastSeconds || isTiming != lastTimingState) {
+        updateTimerDisplay();
+        lastSeconds = currentSeconds;
+        lastTimingState = isTiming;
+      }
+    }
+  }
+  
+  // ====================== 模式2：贪吃蛇游戏模式 ======================
+  else {
+    // 游戏结束：显示结束界面，跳过后续游戏逻辑（替换continue）
+    if (gameOver) {
+      showGameOverScreen();
+    } else {
+      // 检测方向键（控制蛇移动）
+      checkDirectionKeys(currentTime);
+      
+      // 控制蛇移动速度
+      if (currentTime - lastMoveTime > SNAKE_SPEED) {
+        moveSnake();
+        checkCollision();
+        checkFood();
+        drawGame();
+        lastMoveTime = currentTime;
+      }
+    }
+  }
+  
+  delay(50);
+}
+
+// ====================== 原始功能函数（完全保留） ======================
+void showHelloWorld() {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(3);
+  tft.drawString("Hello, World!", 30, 80);
+  
+  isTimerShow = false;
+  lastSeconds = -1;
+  lastTimingState = false;
+}
+
+void initTimerDisplay() {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(8);
+  tft.drawString("00:00", 60, 80);
+  tft.setTextSize(2);
+  tft.drawString("Status: Paused", 60, 160);
+  
+  isTimerShow = true;
+  isTiming = false;
+  pauseTime = 0;
+  lastSeconds = 0;
+  lastTimingState = false;
+}
+
+void updateTimerDisplay() {
+  unsigned long currentTime = 0;
+  if (isTiming) {
+    currentTime = pauseTime + (millis() - startTime) / 1000;
+  } else {
+    currentTime = pauseTime;
+  }
+  
+  int minutes = currentTime / 60;
+  int seconds = currentTime % 60;
+  
+  char timerStr[6];
+  snprintf(timerStr, sizeof(timerStr), "%02d:%02d", minutes, seconds);
+  
+  tft.fillRect(60, 80, 220, 70, TFT_BLACK);
+  delayMicroseconds(100);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(8);
+  tft.drawString(timerStr, 60, 80);
+  
+  tft.fillRect(60, 160, 180, 30, TFT_BLACK);
+  tft.setTextSize(2);
+  if (isTiming) {
+    tft.drawString("Status: Running", 60, 160);
+  } else {
+    tft.drawString("Status: Paused", 60, 160);
+  }
+}
+
+void checkKeyPress() {
+  if (digitalRead(WIO_KEY_A) == LOW) {
+    delay(50);
+    if (digitalRead(WIO_KEY_A) == LOW) {
+      showHelloWorld();
+      while (digitalRead(WIO_KEY_A) == LOW);
+    }
+  }
+  
+  if (digitalRead(WIO_KEY_B) == LOW) {
+    delay(50);
+    if (digitalRead(WIO_KEY_B) == LOW) {
+      initTimerDisplay();
+      while (digitalRead(WIO_KEY_B) == LOW);
+    }
+  }
+  
+  if (digitalRead(WIO_KEY_C) == LOW) {
+    delay(50);
+    if (digitalRead(WIO_KEY_C) == LOW) {
+      if (isTimerShow) {
+        if (isTiming) {
+          isTiming = false;
+          pauseTime += (millis() - startTime) / 1000;
+        } else {
+          isTiming = true;
+          startTime = millis();
+        }
+        lastTimingState = !isTiming;
+      }
+      while (digitalRead(WIO_KEY_C) == LOW);
+    }
+  }
+}
+
+// ====================== 贪吃蛇游戏函数（新增） ======================
+void showGameOverScreen() {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_RED);
+  tft.setTextSize(3);
+  tft.drawString("Game Over", 60, 60);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.drawString("Score: " + String(snakeLength - 3), 70, 120);
+  tft.drawString("Press Center", 60, 160);
+  tft.drawString("to Exit Game", 70, 200);
+}
+
+void initGame() {
+  tft.fillScreen(TFT_BLACK);
+  
+  // 初始化蛇位置
+  int startX = GRID_COLS / 2;
+  int startY = GRID_ROWS / 2;
+  for (int i = 0; i < snakeLength; i++) {
+    snake[i].x = startX - i;
+    snake[i].y = startY;
+  }
+  
+  dirX = 1;
+  dirY = 0;
+  spawnFood();
+  lastMoveTime = millis();
+}
+
+void spawnFood() {
+  bool foodOnSnake;
+  do {
+    foodX = random(0, GRID_COLS);
+    foodY = random(0, GRID_ROWS);
+    
+    foodOnSnake = false;
+    for (int i = 0; i < snakeLength; i++) {
+      if (snake[i].x == foodX && snake[i].y == foodY) {
+        foodOnSnake = true;
+        break;
+      }
+    }
+  } while (foodOnSnake);
+}
+
+void checkDirectionKeys(unsigned long currentTime) {
+  // 上键
+  if (digitalRead(WIO_5S_UP) == LOW && dirY != 1 && currentTime - lastDebounceTime > debounceDelay) {
+    Serial.println("5 Way Up");
+    dirX = 0;
+    dirY = -1;
+    lastDebounceTime = currentTime;
+  }
+  // 下键
+  else if (digitalRead(WIO_5S_DOWN) == LOW && dirY != -1 && currentTime - lastDebounceTime > debounceDelay) {
+    Serial.println("5 Way Down");
+    dirX = 0;
+    dirY = 1;
+    lastDebounceTime = currentTime;
+  }
+  // 左键
+  else if (digitalRead(WIO_5S_LEFT) == LOW && dirX != 1 && currentTime - lastDebounceTime > debounceDelay) {
+    Serial.println("5 Way Left");
+    dirX = -1;
+    dirY = 0;
+    lastDebounceTime = currentTime;
+  }
+  // 右键
+  else if (digitalRead(WIO_5S_RIGHT) == LOW && dirX != -1 && currentTime - lastDebounceTime > debounceDelay) {
+    Serial.println("5 Way Right");
+    dirX = 1;
+    dirY = 0;
+    lastDebounceTime = currentTime;
+  }
+}
+
+void moveSnake() {
+  for (int i = snakeLength - 1; i > 0; i--) {
+    snake[i].x = snake[i-1].x;
+    snake[i].y = snake[i-1].y;
+  }
+  
+  snake[0].x += dirX;
+  snake[0].y += dirY;
+  
+  // 穿墙效果
+  if (snake[0].x < 0) snake[0].x = GRID_COLS - 1;
+  if (snake[0].x >= GRID_COLS) snake[0].x = 0;
+  if (snake[0].y < 0) snake[0].y = GRID_ROWS - 1;
+  if (snake[0].y >= GRID_ROWS) snake[0].y = 0;
+}
+
+void checkCollision() {
+  for (int i = 1; i < snakeLength; i++) {
+    if (snake[0].x == snake[i].x && snake[0].y == snake[i].y) {
+      gameOver = true;
+      Serial.println("Game Over - Self Collision");
+      break;
+    }
+  }
+}
+
+void checkFood() {
+  if (snake[0].x == foodX && snake[0].y == foodY) {
+    snakeLength++;
+    spawnFood();
+    Serial.println("Eat Food - Length: " + String(snakeLength));
+  }
+}
+
+void drawGame() {
+  tft.fillScreen(TFT_BLACK);
+  
+  // 绘制蛇
+  for (int i = 0; i < snakeLength; i++) {
+    int x = snake[i].x * GRID_SIZE;
+    int y = snake[i].y * GRID_SIZE;
+    if (i == 0) {
+      tft.fillRect(x, y, GRID_SIZE - 1, GRID_SIZE - 1, TFT_GREEN);
+    } else {
+      tft.fillRect(x, y, GRID_SIZE - 1, GRID_SIZE - 1, TFT_WHITE);
+    }
+  }
+  
+  // 绘制食物
+  int foodDrawX = foodX * GRID_SIZE;
+  int foodDrawY = foodY * GRID_SIZE;
+  tft.fillRect(foodDrawX, foodDrawY, GRID_SIZE - 1, GRID_SIZE - 1, TFT_RED);
+  
+  // 绘制分数
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.drawString("Score: " + String(snakeLength - 3), 10, 10);
+}
