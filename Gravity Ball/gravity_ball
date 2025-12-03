@@ -1,0 +1,142 @@
+#include"TFT_eSPI.h"
+#include <Wire.h>
+#include <LIS3DHTR.h>
+
+// ====================== 硬件初始化 ======================
+TFT_eSPI tft;                     
+LIS3DHTR<TwoWire> lis;            
+#define LCD_BACKLIGHT (72Ul)      
+
+// ====================== 游戏参数配置 ======================
+int ballX;                        
+int ballY;                        
+const int ballRadius = 8;         
+const int ballSpeed = 9;          // 速度保持9倍高速
+
+// 屏幕边界
+int screenLeft;
+int screenRight;
+int screenTop;
+int screenBottom;
+
+// 游戏状态
+bool gameOver = false;            
+
+// ====================== 初始化函数 ======================
+void setup() {
+  Serial.begin(115200);
+  
+  // 显示屏初始化
+  tft.begin();
+  tft.setRotation(3);  
+  digitalWrite(LCD_BACKLIGHT, HIGH); 
+  tft.fillScreen(TFT_BLACK);         
+  
+  // 加速度传感器初始化
+  Wire1.begin();
+  lis.begin(Wire1, LIS3DHTR_DEFAULT_ADDRESS);
+  lis.setFullScaleRange(LIS3DHTR_RANGE_2G); 
+  lis.setOutputDataRate(LIS3DHTR_DATARATE_50HZ); 
+  
+  // 按键初始化（完全复用您提供的官方代码）
+  pinMode(WIO_KEY_A, INPUT_PULLUP);
+  pinMode(WIO_KEY_B, INPUT_PULLUP);
+  pinMode(WIO_KEY_C, INPUT_PULLUP);
+  
+  // 初始化游戏
+  initGame();
+  drawBall(ballX, ballY);
+  
+  Serial.println("游戏初始化完成，按下A/B/C键重置游戏！");
+}
+
+// ====================== 主循环 ======================
+void loop() {
+  // 游戏结束时检测按键重置（复用您的按键检测逻辑）
+  if (gameOver) {
+    checkResetButton();
+    return;
+  }
+  
+  // 读取加速度数据
+  float x = lis.getAccelerationX(); 
+  float y = lis.getAccelerationY(); 
+  
+  // 方向逻辑：逆时针90°+再转180°（顺时针90°）
+  ballX -= y * ballSpeed;          
+  ballY += x * ballSpeed;          
+  
+  // 边界检测：碰到边缘结束游戏
+  if (ballX < screenLeft || ballX > screenRight || 
+      ballY < screenTop || ballY > screenBottom) {
+    gameOver = true;
+    showGameOver();
+    Serial.println("游戏结束，按下A/B/C键重置");
+    return;
+  }
+  
+  // 绘制小球
+  tft.fillScreen(TFT_BLACK);
+  drawBall(ballX, ballY);
+  
+  delay(16); 
+}
+
+// ====================== 游戏初始化函数 ======================
+void initGame() {
+  ballX = tft.width()/2;
+  ballY = tft.height()/2;
+  
+  screenLeft = ballRadius;
+  screenRight = tft.width() - ballRadius;
+  screenTop = ballRadius;
+  screenBottom = tft.height() - ballRadius;
+  
+  gameOver = false;
+  tft.fillScreen(TFT_BLACK);
+}
+
+// ====================== 绘制小球函数 ======================
+void drawBall(int x, int y) {
+  tft.fillCircle(x, y, ballRadius, TFT_WHITE); 
+  tft.drawCircle(x, y, ballRadius, TFT_RED);   
+}
+
+// ====================== 游戏结束显示 ======================
+void showGameOver() {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(4);
+  tft.setTextColor(TFT_RED);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("Game Over", tft.width()/2, tft.height()/2);
+  
+  // 按键提示
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.drawString("Press A/B/C to restart", tft.width()/2, tft.height()/2 + 50);
+}
+
+// ====================== 按键检测函数（完全复用您提供的代码） ======================
+void checkResetButton() {
+  // 复用您的按键检测逻辑：INPUT_PULLUP + LOW判定
+  if (digitalRead(WIO_KEY_A) == LOW) {
+    Serial.println("A Key pressed");
+    resetGame();
+  }
+  else if (digitalRead(WIO_KEY_B) == LOW) {
+    Serial.println("B Key pressed");
+    resetGame();
+  }
+  else if (digitalRead(WIO_KEY_C) == LOW) {
+    Serial.println("C Key pressed");
+    resetGame();
+  }
+  delay(200); // 复用您的200ms延时消抖
+}
+
+// ====================== 游戏重置函数 ======================
+void resetGame() {
+  initGame();
+  drawBall(ballX, ballY);
+  Serial.println("游戏已重置！");
+}
